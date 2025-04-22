@@ -1,4 +1,4 @@
-module org.example.gomokugame {
+module gomokugame {
     requires javafx.controls;
     requires javafx.fxml;
     requires jdk.xml.dom;
@@ -15,4 +15,8 @@ module org.example.gomokugame {
     opens gomokugame to javafx.fxml;
     exports gomokugame.guis;
     opens gomokugame.guis to javafx.fxml;
+    exports gomokugame.guis.elements;
+    opens gomokugame.guis.elements to javafx.fxml;
+    exports gomokugame.guis.layouts;
+    opens gomokugame.guis.layouts to javafx.fxml;
 }

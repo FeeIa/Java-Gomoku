@@ -2,20 +2,21 @@ package gomokugame.objects;
 
 import java.io.Serializable;
 
-public class SerializableRoom implements Serializable {
-    protected int roomId;
-    protected String roomName;
-    protected String roomCreatorId;
-    protected long timerPerTurnInMilliseconds;
-    protected int boardSize;
-    protected int connectedPlayersAmount;
-    protected boolean isCreateRequest;
+public class SerializedRoom implements Serializable {
+    public int roomId;
+    public String roomName;
+    public String roomCreatorId;
+    public long timerPerTurnInMilliseconds;
+    public int invisibleModeRevealChances;
+    public int boardSize;
+    public int connectedPlayersAmount;
+    public boolean isCreateRequest;
 
     // Client usage
-    protected boolean asPlayer;
-    protected boolean asSpectator;
+    public boolean asPlayer;
+    public boolean asSpectator;
 
-    public SerializableRoom(String roomName) {
+    public SerializedRoom(String roomName) {
         this.roomName = roomName;
     }
 }

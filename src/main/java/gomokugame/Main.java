@@ -1,5 +1,6 @@
-package org.example.gomokugame;
+package gomokugame;
 
+import gomokugame.client.Client;
 import gomokugame.server.Server;
 import javafx.application.Application;
 import javafx.application.Platform;
@@ -8,33 +9,33 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class Main extends Application {
-    /// VARIABLES & INITIALIZERS
-    protected static final int DEFAULT_WIDTH = 960;
-    protected static final int DEFAULT_HEIGHT = 540;
-    private static final double ASPECT_RATIO = (double) DEFAULT_WIDTH / (double) DEFAULT_HEIGHT;
+    public static final int[] BOARD_SIZE_OPTIONS = {9, 11, 13, 15, 19, 20, 30};
+    public static final double[] TIMER_PER_TURN_OPTIONS = {15, 30, 45, 60};
+    public static final int[] INVISIBLE_MODE_REVEAL_CHANCES = {1, 3, 5, 7, 10, 15};
+    public static final int DEFAULT_WIDTH = 960;
+    public static final int DEFAULT_HEIGHT = 540;
     private static final int GLOBAL_PORT = 9090; // The port to connect to
     private static final ExecutorService threadPool = Executors.newCachedThreadPool();
-    protected static final int[] BOARD_SIZE_OPTIONS = {9, 11, 13, 15, 19, 20, 30};
-    protected static final double[] TIMER_PER_TURN_OPTIONS = {15, 30, 45, 60};
 
     @Override
     public void start(Stage stage) {
-        // Open a gomokugame.server socket
+        // Opens up a server socket
         Server server = new Server(GLOBAL_PORT); // Will not open if not the first instance of Client to join
-        threadPool.execute(server);
+        threadPool.execute(server); // Executes the server thread. If failed to open, it'll stop execution by return
 
-        // Open a gomokugame.client connection
+        // Opens up a client socket
         Client client = new Client(GLOBAL_PORT, stage);
         client.run();
 
         // Stage setup
         stage.setTitle("Gomoku Game");
         stage.show();
-        stage.setOnCloseRequest(_ -> {
+        stage.setOnCloseRequest(e -> {
             if (client.clientSocket != null) {
                 client.close();
                 System.out.println("Client closed.");
 
+                // If the current instance was not the first Client to join, then terminate completely, otherwise retain
                 if (!server.success()) {
                     Platform.exit();
                     System.exit(0);

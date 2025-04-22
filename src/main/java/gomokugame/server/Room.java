@@ -1,39 +1,41 @@
-package org.example.gomokugame;
+package gomokugame.server;
 
-import gomokugame.server.Server;
+import gomokugame.objects.*;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.concurrent.*;
 
 public class Room implements Runnable {
-    /// VARIABLES & INITIALIZERS
-    protected int boardSize = 20; // Defaults to 20
-    protected GameObject.Board board;
-    protected Server.ClientConnection black;
-    protected Server.ClientConnection white;
-    protected Server.ClientConnection currentPlayerInTurn;
-    protected Server.ClientConnection winner;
-    protected ArrayList<GameObject.Move> movesDone;
-    protected ArrayList<Server.ClientConnection> connectedClients; // Connected clients (player + spectator)
-    protected final int roomId;
-    protected Server.ClientConnection roomCreator;
-    protected String roomName;
+    private final ExecutorService threadPool;
+    private ClientConnection winner;
+    protected ClientConnection black;
+    protected ClientConnection white;
+    protected ClientConnection currentPlayerInTurn;
     protected int timerPerTurnInMilliseconds;
+    protected final int roomId;
+    protected String roomName;
+    protected ClientConnection roomCreator;
+    protected int boardSize = 20; // Defaults to 20
+    protected Board board;
+    protected int invisibleModeRevealChances;
+    protected int blackInvisibleModeRevealChances;
+    protected int whiteInvisibleModeRevealChances;
+    protected ArrayList<Move> movesDone;
+    protected ArrayList<ClientConnection> connectedClients; // Connected clients (player + spectator)
     protected boolean matchInProgress = false;
+    protected boolean blackRequestedRematch = false;
+    protected boolean whiteRequestedRematch = false;
     protected final Object initLock = new Object();
     protected final Object moveLock = new Object();
-    private final ExecutorService threadPool;
-    private final int[][] checkingDirections = { // Lists the absolute direction for straight-five checking
+    private static final int[][] checkingDirections = { // Lists the absolute direction for straight-five checking
             {0, 1}, // Horizontal
             {1, 0}, // Vertical
             {-1, 1}, // Diagonal up
             {1, 1} // Diagonal down
     };
-    protected boolean whiteRequestedRematch = false;
-    protected boolean blackRequestedRematch = false;
 
-    public Room(int roomId, Server.ClientConnection creator) {
+    public Room(int roomId, ClientConnection creator) {
         this.roomId = roomId;
         this.roomCreator = creator;
 
@@ -49,8 +51,7 @@ public class Room implements Runnable {
     }
 
     /// METHODS
-    // Adds gomokugame.client to the connectedClients list
-    protected void addClient(Server.ClientConnection client) {
+    protected void addClient(ClientConnection client) {
         if (!this.connectedClients.contains(client)) {
             System.out.println("ADDING: " + client.id);
 
@@ -58,10 +59,8 @@ public class Room implements Runnable {
         }
     }
 
-    protected void startSpectate(Server.ClientConnection client) {
-        this.threadPool.execute(() -> {
-            this.sendClientStartRequest(client);
-        });
+    protected void startSpectate(ClientConnection client) {
+        this.threadPool.execute(() -> this.sendClientStartRequest(client));
     }
 
     protected void checkForRematchRequest() {
@@ -74,6 +73,8 @@ public class Room implements Runnable {
     protected void startMatch() {
         System.out.println("Starting match in room " + this.roomId);
         this.matchInProgress = true;
+        this.blackInvisibleModeRevealChances = this.invisibleModeRevealChances;
+        this.whiteInvisibleModeRevealChances = this.invisibleModeRevealChances;
 
         this.threadPool.execute(() -> {
             this.initializeBoard();
@@ -84,7 +85,7 @@ public class Room implements Runnable {
 
             this.sendClientStartRequest(this.black);
             this.sendClientStartRequest(this.white);
-            for (Server.ClientConnection c : this.connectedClients) {
+            for (ClientConnection c : this.connectedClients) {
                 if (c != this.white && c != this.black) {
                     this.sendClientStartRequest(c);
                 }
@@ -101,7 +102,7 @@ public class Room implements Runnable {
 
                 synchronized (this.moveLock) {
                     try {
-                        this.currentPlayerInTurn.oos.writeObject(new GameObject.MoveRequest(this.timerPerTurnInMilliseconds));
+                        this.currentPlayerInTurn.oos.writeObject(new MoveRequest(this.timerPerTurnInMilliseconds));
                         this.currentPlayerInTurn.oos.flush();
 
                         // Schedules a move skip if ran out of time
@@ -116,7 +117,7 @@ public class Room implements Runnable {
                                         this.currentPlayerInTurn.oos.writeObject("MOVE_TIMEOUT");
                                         this.currentPlayerInTurn.oos.flush();
                                     } catch (IOException e) {
-                                        System.err.println("Error sending MOVE_TIMEOUT to gomokugame.client");
+                                        System.err.println("Error sending MOVE_TIMEOUT to client");
                                     }
 
                                     this.moveLock.notifyAll();
@@ -131,7 +132,7 @@ public class Room implements Runnable {
                             timerTask.cancel(false);
                         }
                     } catch (IOException e) {
-                        System.err.println("Failed to send MoveRequest to gomokugame.client " + this.currentPlayerInTurn.id);
+                        System.err.println("Failed to send MoveRequest to client " + this.currentPlayerInTurn.id);
                     } catch (InterruptedException e) {
                         throw new RuntimeException(e);
                     }
@@ -145,7 +146,7 @@ public class Room implements Runnable {
     }
 
     // Ends the match
-    public void endMatch() {
+    protected void endMatch() {
         System.out.println("ENDING MATCH...");
 
         // Reset everything
@@ -157,37 +158,37 @@ public class Room implements Runnable {
             this.moveLock.notifyAll();
         }
 
-        GameObject.MatchEndResult result = new GameObject.MatchEndResult();
-        if (this.winner != null) {
+        boolean wasAnAbort;
+        if (this.white != null && this.black != null) {
             System.out.println((this.winner == this.white ? "WHITE" : "BLACK") + " WON!!!");
-            result.wasAnAbort = false;
+            wasAnAbort = false;
         }
         else {
-            result.wasAnAbort = true;
+            wasAnAbort = true;
             this.winner = (this.white == null) ? this.black : this.white; // Grants winner to the player that remains
             System.out.println("Match aborted because a player left. " + (this.winner == this.white ? "White" : "Black" + " won by default."));
         }
 
-        for (Server.ClientConnection client : this.connectedClients) {
-            this.sendClientEndRequest(client, result);
+        for (ClientConnection client : this.connectedClients) {
+            this.sendClientEndRequest(client, wasAnAbort);
         }
     }
 
     // Initializes the Board object
     private void initializeBoard() {
-        this.board = new GameObject.Board(this.boardSize);
+        this.board = new Board(this.boardSize);
         int rows = this.board.boardArray.length;
         int cols = this.board.boardArray[0].length;
 
         for (int row = 0; row < rows; row++) {
             for (int col = 0; col < cols; col++) {
-                this.board.boardArray[row][col] = new GameObject.Tile(row, col);
+                this.board.boardArray[row][col] = new Tile(row, col);
             }
         }
     }
 
-    // Sends a message to specified gomokugame.client for initialization
-    private void sendClientStartRequest(Server.ClientConnection client) {
+    // Sends a message to specified client for initialization
+    private void sendClientStartRequest(ClientConnection client) {
         try {
             client.oos.writeObject("START_REQUEST");
             client.oos.flush();
@@ -196,14 +197,18 @@ public class Room implements Runnable {
                 this.initLock.wait();
             }
         } catch (IOException | InterruptedException e) {
-            System.err.println("Failed to send START_REQUEST to gomokugame.client " + client.id);
+            System.err.println("Failed to send START_REQUEST to Client " + client.id);
         }
     }
 
-    // Sends a message to specified gomokugame.client to tell that the match ended
-    private void sendClientEndRequest(Server.ClientConnection client, GameObject.MatchEndResult result) {
+    // Sends a message to specified client to tell that the match ended
+    private void sendClientEndRequest(ClientConnection client, boolean wasAnAbort) {
         try {
+            MatchEndResult result = new MatchEndResult();
+
             if (this.winner != null) {
+                result.wasAnAbort = wasAnAbort;
+
                 if (client == this.winner) {
                     result.winner = true;
                 }
@@ -220,7 +225,7 @@ public class Room implements Runnable {
             client.oos.writeObject(result);
             client.oos.flush();
         } catch (IOException e) {
-            System.err.println("Failed to send end request to gomokugame.client " + client.id);
+            System.err.println("Failed to send end request to Client " + client.id);
         }
     }
 
@@ -228,9 +233,9 @@ public class Room implements Runnable {
     private boolean checkForWinningCondition() {
         if (!this.movesDone.isEmpty()) {
             System.out.println("Checking for winning conditions...");
-            GameObject.Move lastMoveMade = this.movesDone.getLast();
+            Move lastMoveMade = this.movesDone.getLast();
 
-            for (int[] dir : this.checkingDirections) {
+            for (int[] dir : checkingDirections) {
                 int consecutiveCount = this.checkConsecutivePieces(lastMoveMade, dir);
                 System.out.println("Found " + consecutiveCount + " consecutive pieces.");
 
@@ -247,9 +252,9 @@ public class Room implements Runnable {
     }
 
     // Helper method of checkForWinningCondition() to check for consecutive pieces
-    private int checkConsecutivePieces(GameObject.Move lastMove, int[] dir) {
+    private int checkConsecutivePieces(Move lastMove, int[] dir) {
         int count = 1; // Including the starting cell
-        GameObject.Tile[][] boardArray = this.board.boardArray;
+        Tile[][] boardArray = this.board.boardArray;
 
         // Positive direction
         int currentRow = lastMove.targetRow + dir[0];

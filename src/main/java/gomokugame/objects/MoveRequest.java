@@ -1,4 +1,11 @@
 package gomokugame.objects;
 
-public class MoveRequest {
+import java.io.Serializable;
+
+public class MoveRequest implements Serializable {
+    public int timerPerTurnInMilliseconds;
+
+    public MoveRequest(int timerPerTurnInMilliseconds) {
+        this.timerPerTurnInMilliseconds = timerPerTurnInMilliseconds;
+    }
 }

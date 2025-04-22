@@ -1,5 +1,8 @@
-package org.example.gomokugame;
-import gomokugame.objects.GameObject;
+package gomokugame.client;
+
+import gomokugame.guis.elements.*;
+import gomokugame.guis.layouts.*;
+import gomokugame.objects.*;
 import javafx.animation.KeyFrame;
 import javafx.animation.Timeline;
 import javafx.application.Platform;
@@ -7,7 +10,9 @@ import javafx.scene.Scene;
 import javafx.scene.layout.Pane;
 import javafx.scene.paint.Color;
 import javafx.stage.Stage;
+import javafx.stage.WindowEvent;
 import javafx.util.Duration;
+import gomokugame.Main;
 
 import java.io.*;
 import java.net.Socket;
@@ -15,29 +20,32 @@ import java.util.ArrayList;
 import java.util.concurrent.*;
 
 public class Client implements Runnable {
-    /// VARIABLES & INITIALIZERS
-    protected Socket clientSocket;
+    public Socket clientSocket;
     private Stage stage;
-    private GameObject.Board board;
+    private Board board;
     private String color;
-    private ArrayList<GameObject.SerializableRoom> availableRooms;
-    private ObjectOutputStream oos;
-    private ObjectInputStream ois;
-    private GUI.GameMatchGui gameMatchGui;
+    private ArrayList<SerializedRoom> availableRooms;
+    private Move lastMove;
+    private boolean turnTimerIsRunning;
+    private boolean invisibleModeIsOn = false;
+    private int invisibleModeRevealChances;
+    private boolean revealModeIsOn;
+    private int invalidMovesCount;
     private Scene mainMenuScene;
     private Scene roomListScene;
     private Scene roomCreationScene;
     private Scene roomSettingsScene;
-    private GUI.MainMenuGui mainMenuGui;
-    private GUI.RoomListGui roomListGui;
-    private GUI.RoomCreationGui roomCreationGui;
-    private GUI.RoomSettingsGui roomSettingsGui;
-    private GUI.MatchEndScreen matchEndScreen;
+    private MainMenuGui mainMenuGui;
+    private RoomListGui roomListGui;
+    private RoomCreationGui roomCreationGui;
+    private RoomSettingsGui roomSettingsGui;
+    private GameMatchGui gameMatchGui;
+    private MatchEndScreen matchEndScreen;
     private final Object oisThreadLock = new Object();
     private final Object matchEndThreadLock = new Object();
+    private ObjectOutputStream oos;
+    private ObjectInputStream ois;
     private ExecutorService threadPool;
-    private GameObject.Move lastMove;
-    private boolean turnTimerIsRunning;
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
 
     public Client(int port, Stage stage) {
@@ -46,15 +54,15 @@ public class Client implements Runnable {
             this.stage = stage;
             System.out.println("Client connected to port " + this.clientSocket.getPort());
         } catch (IOException e){
-            // Failed to open, so gomokugame.client must be null
+            // Failed to open, so client must be null
             this.clientSocket = null; // Just to ensure
-            System.err.println("Could not connect to gomokugame.server on port " + port + ". Possibly due to no gomokugame.server online or invalid port.");
+            System.err.println("Could not connect to Server on port " + port + ". Possibly due to no server online or invalid port.");
         }
     }
 
     @Override
     public void run() {
-        // If gomokugame.client failed to open then terminate process
+        // If client fails to open then terminate process
         if (this.clientSocket == null) {
             return;
         }
@@ -72,28 +80,29 @@ public class Client implements Runnable {
         }
 
         // Initializing GUIs
-        this.mainMenuGui = new GUI.MainMenuGui();
+        this.mainMenuGui = new MainMenuGui();
         this.mainMenuScene = new Scene(this.mainMenuGui, Main.DEFAULT_WIDTH, Main.DEFAULT_HEIGHT);
         this.stage.setScene(this.mainMenuScene);
 
         // Sets up a MouseClicked event upon clicking Start Game to open roomListGui
-        this.mainMenuGui.startGameButton.setOnMouseClicked(_ -> {
-            // If roomListGui is NULL then create initialize new one
+        this.mainMenuGui.startGameButton.setOnMouseClicked(e1 -> {
+            // If roomListGui is NULL then create and initialize new one
             if (this.roomListGui == null) {
-                this.roomListGui = new GUI.RoomListGui();
+                this.roomListGui = new RoomListGui();
 
-                // Create Room button click
-                this.roomListGui.createRoomButton.setOnMouseClicked(_ -> {
+                // Show room creation gui upon clicking create room
+                this.roomListGui.createRoomButton.setOnMouseClicked(e2 -> {
                     // If roomCreationGui is NULL then initialize new one
                     if (this.roomCreationGui == null) {
-                        this.roomCreationGui = new GUI.RoomCreationGui();
+                        this.roomCreationGui = new RoomCreationGui();
 
-                        this.roomCreationGui.createRoomButton.setOnMouseClicked(_ -> {
+                        // Process room creation
+                        this.roomCreationGui.createRoomButton.setOnMouseClicked(e3 -> {
                             String roomName = this.roomCreationGui.roomNameTextField.getText();
 
                             if (!roomName.isEmpty()) {
                                 if (this.roomSettingsGui == null) {
-                                    this.roomSettingsGui = new GUI.RoomSettingsGui();
+                                    this.initializeRoomSettingsGui();
                                 }
 
                                 if (!this.roomSettingsGui.hBox2.getChildren().contains(this.roomSettingsGui.startButton)) {
@@ -103,71 +112,37 @@ public class Client implements Runnable {
                                     this.roomSettingsGui.hBox.getChildren().add(this.roomSettingsGui.settings);
                                 }
 
-                                this.roomSettingsGui.boardSizeSettings.setOnAction(e -> {
-                                    String selectedItem = this.roomSettingsGui.boardSizeSettings.getSelectionModel().getSelectedItem();
-
-                                    if (selectedItem != null) {
-                                        System.out.println(selectedItem);
-
-                                        GameObject.BoardSizeOption boardSizeOption = new GameObject.BoardSizeOption(Integer.parseInt(selectedItem.split("x")[0]));
-                                        this.sendMessageToServer(boardSizeOption);
-                                    }
-                                });
-
-                                this.roomSettingsGui.timerPerTurnSettings.setOnAction(e -> {
-                                   String selectedItem = this.roomSettingsGui.timerPerTurnSettings.getSelectionModel().getSelectedItem();
-
-                                   if (selectedItem != null) {
-                                       System.out.println(selectedItem);
-                                       GameObject.TimerOption timerOption;
-
-                                       if (selectedItem.equals("N/A")) {
-                                           timerOption = new GameObject.TimerOption(0);
-                                       }
-                                       else {
-                                           timerOption = new GameObject.TimerOption((int) (Double.parseDouble(selectedItem.split("s")[0]) * 1000));
-                                       }
-
-                                       this.sendMessageToServer(timerOption);
-                                   }
-                                });
-
-                                this.roomSettingsGui.leaveRoom.setOnMouseClicked(_ -> {
-                                    this.sendLeaveRoomRequest();
-                                    this.showRoomList();
-                                });
-
-                                this.roomSettingsGui.startButton.setOnMouseClicked(_ -> {
-                                    this.sendStartMatchRequest();
-                                });
-
                                 this.sendCreateRoomRequest(roomName);
+                                this.roomSettingsGui.setDefaultSettingsValue();
                                 this.showRoomSettings();
                             }
                         });
                     }
+
+                    this.roomCreationGui.roomNameTextField.setText("");
                     this.showRoomCreation(); // Show the room creation gui
                 });
 
                 // Back button click
-                this.roomListGui.backButton.setOnMouseClicked(_ -> {
-                    this.showMainMenu();
-                });
+                this.roomListGui.backButton.setOnMouseClicked(e -> this.showMainMenu());
             }
 
             this.showRoomList(); // Show the room list
-            this.getRoomListByIdFromServer(); // Get available rooms from gomokugame.server
+            this.getRoomListFromServer(); // Get available rooms from server
         });
 
-        this.listenToServerMessage(); // Listen to gomokugame.server message in a separate thread
+        this.mainMenuGui.exitGameButton.setOnMouseClicked(e -> this.stage.fireEvent(new WindowEvent(this.stage, WindowEvent.WINDOW_CLOSE_REQUEST)));
+
+        this.listenToServerMessage(); // Listen to server message in a separate thread
     }
 
     public void close() {
         try {
             if (!this.clientSocket.isClosed()) {
                 this.clientSocket.close();
-                this.oos.close();;
+                this.oos.close();
                 this.ois.close();
+                this.threadPool.shutdown();
                 this.scheduler.shutdown();
             }
         } catch (IOException e) {
@@ -176,21 +151,22 @@ public class Client implements Runnable {
     }
 
     /// IN-MATCH METHODS
-    public void startMatch() {
+    private void startMatch() {
         this.threadPool.execute(() -> {
-            this.gameMatchGui = new GUI.GameMatchGui();
+            this.gameMatchGui = new GameMatchGui();
             this.getColorFromServer();
             this.generateBoard();
             this.showGameMatchGui();
+            this.getInvisibleModeRevealChancesFromServer();
             this.sendMessageToServer("FINISHED_INITIALIZING");
         });
     }
 
-    public void generateBoard() {
+    private void generateBoard() {
         this.getBoardFromServer();
 
         System.out.println("Generating board...");
-        GUI.BoardUi boardUi = new GUI.BoardUi(this.board, 0.45, 0.8, this.gameMatchGui);
+        BoardUi boardUi = new BoardUi(this.board, 0.45, 0.8, this.gameMatchGui);
         System.out.println("SUCCESS");
 
         Platform.runLater(() -> {
@@ -205,60 +181,116 @@ public class Client implements Runnable {
         });
     }
 
-    public void handleMoveRequest() {
-        Platform.runLater(() -> {
-            this.gameMatchGui.bottomText.text.setText("YOUR TURN");
-        });
+    private void handleMoveRequest() {
+        Platform.runLater(() -> this.gameMatchGui.bottomText.text.setText("YOUR TURN"));
 
         // Sets a MouseClick connection for each tile
-        for (GameObject.Tile[] tiles : this.board.boardArray) {
-            for (GameObject.Tile tile : tiles) {
+        for (Tile[] tiles : this.board.boardArray) {
+            for (Tile tile : tiles) {
                 tile.ui.tileSquare.setOnMouseClicked(e -> {
-                    GameObject.Move move = new GameObject.Move(tile.row, tile.col);
+                    Move move = new Move(tile.row, tile.col);
                     this.lastMove = move;
                     this.sendMessageToServer(move);
                 });
 
-                tile.ui.tileSquare.setOnMouseEntered(e -> {
-                    tile.ui.hoverIndicator.setFill(Color.CYAN);
-                });
+                tile.ui.tileSquare.setOnMouseEntered(e -> tile.ui.hoverIndicator.setFill(Color.CYAN));
 
-                tile.ui.tileSquare.setOnMouseExited(e -> {
-                    tile.ui.hoverIndicator.setFill(Color.TRANSPARENT);
-                });
+                tile.ui.tileSquare.setOnMouseExited(e -> tile.ui.hoverIndicator.setFill(Color.TRANSPARENT));
             }
         }
+
+        if (this.invisibleModeIsOn) this.invalidMovesCount = 0;
     }
 
-    public void handleMoveTimeout() {
-        Platform.runLater(() -> {
-            this.gameMatchGui.bottomText.text.setText("RAN OUT OF TIME TO MAKE A MOVE");
-            this.gameMatchGui.turnTimer.text.setText("");
-
-            ScheduledFuture<?> timerTask = this.scheduler.schedule(() -> {
-                Platform.runLater(() -> {
-                    if (this.gameMatchGui.bottomText.text.getText().equals("RAN OUT OF TIME TO MAKE A MOVE")) {
-                        this.gameMatchGui.bottomText.text.setText("");
-                    }
-                });
-            }, 1000, TimeUnit.MILLISECONDS);
-        });
-
-        for (GameObject.Tile[] tiles : this.board.boardArray) {
-            for (GameObject.Tile tile : tiles) {
-                tile.ui.hoverIndicator.setFill(Color.TRANSPARENT);
-                tile.ui.tileSquare.setOnMouseClicked(null);
-                tile.ui.tileSquare.setOnMouseEntered(null);
-                tile.ui.tileSquare.setOnMouseExited(null);
+    // Just a helper function for three other functions
+    private void afterMove() {
+        for (Tile[] cTiles : this.board.boardArray) {
+            for (Tile cTile : cTiles) {
+                cTile.ui.tileSquare.setOnMouseClicked(null);
+                cTile.ui.tileSquare.setOnMouseEntered(null);
+                cTile.ui.tileSquare.setOnMouseExited(null);
+                cTile.ui.hoverIndicator.setFill(Color.TRANSPARENT);
             }
         }
 
         this.turnTimerIsRunning = false;
+        this.gameMatchGui.hideRevealStonesButton();
+        if (this.invisibleModeIsOn && this.revealModeIsOn) {
+            this.hideAllStones();
+            this.revealModeIsOn = false;
+        }
     }
 
-    public void endMatch(GameObject.MatchEndResult endResult) {
+    private void handleValidMove() {
+        Tile tile = this.board.boardArray[this.lastMove.targetRow][this.lastMove.targetCol];
+        tile.ui.hoverIndicator.setFill(Color.TRANSPARENT);
+
+        Platform.runLater(() -> this.gameMatchGui.bottomText.text.setText(""));
+
+        this.afterMove();
+    }
+
+    private void handleInvalidMove() {
+        this.board.boardArray[this.lastMove.targetRow][this.lastMove.targetCol].ui.indicateInvalidMove();
+
+        if (this.invisibleModeIsOn && !this.revealModeIsOn) {
+            this.invalidMovesCount++;
+
+            if (this.invalidMovesCount == 3) {
+                this.handleInvalidMovesPenalty();
+                return;
+            }
+        }
+
+        String toDisplay;
+        if (this.invisibleModeIsOn && !this.revealModeIsOn) {
+            toDisplay = "INVALID MOVE! YOU ONLY CAN MAKE " + (3 - this.invalidMovesCount) + " INVALID MOVE(S) LEFT!";
+        }
+        else {
+            toDisplay = "INVALID MOVE!";
+        }
+        this.gameMatchGui.bottomText.text.setText(toDisplay);
+
+        this.scheduler.schedule(() -> Platform.runLater(() -> {
+            if (this.gameMatchGui.bottomText.text.getText().equals(toDisplay)) {
+                this.gameMatchGui.bottomText.text.setText("YOUR TURN");
+            }
+        }), 1000, TimeUnit.MILLISECONDS);
+    }
+
+    private void handleMoveTimeout() {
         Platform.runLater(() -> {
-            this.matchEndScreen = new GUI.MatchEndScreen(this.gameMatchGui);
+            this.gameMatchGui.bottomText.text.setText("RAN OUT OF TIME TO MAKE A MOVE");
+
+            this.scheduler.schedule(() -> Platform.runLater(() -> {
+                if (this.gameMatchGui.bottomText.text.getText().equals("RAN OUT OF TIME TO MAKE A MOVE")) {
+                    this.gameMatchGui.bottomText.text.setText("");
+                }
+            }), 1000, TimeUnit.MILLISECONDS);
+        });
+
+        this.afterMove();
+    }
+
+    private void handleInvalidMovesPenalty() {
+        Platform.runLater(() -> {
+            this.gameMatchGui.bottomText.text.setText("YOU HAVE MADE 3 INVALID MOVES! SKIPPING YOUR TURN...");
+
+            this.scheduler.schedule(() -> Platform.runLater(() -> {
+                if (this.gameMatchGui.bottomText.text.getText().equals("YOU HAVE MADE 3 INVALID MOVES! SKIPPING YOUR TURN...")) {
+                    this.gameMatchGui.bottomText.text.setText("");
+                }
+            }), 1000, TimeUnit.MILLISECONDS);
+        });
+
+        this.afterMove();
+        this.sendMessageToServer("INVALID_MOVE_PENALTY");
+    }
+
+    private void endMatch(MatchEndResult endResult) {
+        Platform.runLater(() -> {
+            this.showHiddenStones();
+            this.matchEndScreen = new MatchEndScreen(this.gameMatchGui);
 
             if (endResult.spectator) {
                 this.matchEndScreen.hBox.getChildren().clear();
@@ -281,15 +313,13 @@ public class Client implements Runnable {
                 }
 
                 if (endResult.wasAnAbort) {
-                    this.matchEndScreen.subMessage.text.setText("Your opponent aborted the game. Please exit");
+                    this.matchEndScreen.subMessage.text.setText("Your opponent aborted the match. Please exit");
                     this.matchEndScreen.hBox.getChildren().clear();
                     this.matchEndScreen.hBox.getChildren().add(this.matchEndScreen.exitMatch);
                 }
                 else {
                     this.matchEndScreen.subMessage.text.setText("You can choose to request a rematch or exit");
-                    this.matchEndScreen.rematchButton.setOnMouseClicked(e -> {
-                        this.sendMessageToServer("REMATCH_REQUEST");
-                    });
+                    this.matchEndScreen.rematchButton.setOnMouseClicked(e -> this.sendMessageToServer("REMATCH_REQUEST"));
                 }
             }
             else {
@@ -311,6 +341,7 @@ public class Client implements Runnable {
             });
 
             this.turnTimerIsRunning = false;
+            this.invisibleModeIsOn = false;
             this.gameMatchGui.bottomText.text.setText("");
             this.gameMatchGui.getChildren().add(this.matchEndScreen);
 
@@ -332,7 +363,7 @@ public class Client implements Runnable {
                     // Synchronized with oisThreadLock to ensure wanted response after sending a request
                     synchronized (this.oisThreadLock) {
                         if (message instanceof String) {
-                            System.out.println("Received gomokugame.server request: " + message);
+                            System.out.println("Received server request: " + message);
 
                             switch ((String) message) {
                                 case "NOT_ENOUGH_PLAYERS_TO_START":
@@ -340,13 +371,11 @@ public class Client implements Runnable {
                                         Platform.runLater(() -> {
                                             this.roomSettingsGui.warning.text.setText("Not enough player to start the match!");
 
-                                            ScheduledFuture<?> timerTask = this.scheduler.schedule(() -> {
-                                                Platform.runLater(() -> {
-                                                    if (this.roomSettingsGui.warning.text.getText().equals("Not enough player to start the match!")) {
-                                                        this.roomSettingsGui.warning.text.setText("");
-                                                    }
-                                                });
-                                            }, 1000, TimeUnit.MILLISECONDS);
+                                            this.scheduler.schedule(() -> Platform.runLater(() -> {
+                                                if (this.roomSettingsGui.warning.text.getText().equals("Not enough player to start the match!")) {
+                                                    this.roomSettingsGui.warning.text.setText("");
+                                                }
+                                            }), 1000, TimeUnit.MILLISECONDS);
                                         });
                                     }
                                     break;
@@ -368,34 +397,10 @@ public class Client implements Runnable {
                                     this.showRoomList();
                                     break;
                                 case "INVALID_MOVE":
-                                    this.board.boardArray[this.lastMove.targetRow][this.lastMove.targetCol].ui.indicateInvalidMove();
-                                    this.gameMatchGui.bottomText.text.setText("INVALID MOVE");
-
-                                    ScheduledFuture<?> timerTask = this.scheduler.schedule(() -> {
-                                        Platform.runLater(() -> {
-                                            if (this.gameMatchGui.bottomText.text.getText().equals("INVALID MOVE")) {
-                                                this.gameMatchGui.bottomText.text.setText("YOUR TURN");
-                                            }
-                                        });
-                                    }, 1000, TimeUnit.MILLISECONDS);
+                                    this.handleInvalidMove();
                                     break;
                                 case "VALID_MOVE":
-                                    GameObject.Tile tile = this.board.boardArray[this.lastMove.targetRow][this.lastMove.targetCol];
-                                    tile.ui.hoverIndicator.setFill(Color.TRANSPARENT);
-
-                                    for (GameObject.Tile[] cTiles : this.board.boardArray) {
-                                        for (GameObject.Tile cTile : cTiles) {
-                                            cTile.ui.tileSquare.setOnMouseClicked(null);
-                                            cTile.ui.tileSquare.setOnMouseEntered(null);
-                                            cTile.ui.tileSquare.setOnMouseExited(null);
-                                        }
-                                    }
-
-                                    Platform.runLater(() -> {
-                                        this.gameMatchGui.bottomText.text.setText("");
-                                    });
-
-                                    this.turnTimerIsRunning = false;
+                                    this.handleValidMove();
                                     break;
                                 case "MOVE_TIMEOUT":
                                     this.handleMoveTimeout();
@@ -415,13 +420,13 @@ public class Client implements Runnable {
 
                                                 Platform.runLater(() -> {
                                                     this.matchEndScreen.hBox.getChildren().clear();
-                                                    this.matchEndScreen.notification.text.setText("The room host left the match. You will be automatically redirected in 5 seconds");
+                                                    this.matchEndScreen.notification.text.setText("The room host left the match. You will automatically exit in 5 seconds");
 
                                                     Timeline timeline = new Timeline();
                                                     timeline.getKeyFrames().add(
                                                             new KeyFrame(Duration.seconds(1), event -> {
                                                                 timer[0]--;
-                                                                this.matchEndScreen.notification.text.setText("The room host left the match. You will be automatically exit in " + timer[0] + " second(s)");
+                                                                this.matchEndScreen.notification.text.setText("The room host left the match. You will automatically exit in " + timer[0] + " second(s)");
 
                                                                 if (timer[0] <= 0) {
                                                                     this.matchEndScreen.notification.text.setText("");
@@ -442,40 +447,56 @@ public class Client implements Runnable {
                         }
                         else if (message instanceof ArrayList<?> arrayList) {
                             System.out.println("Received room list.");
-                            this.availableRooms = (ArrayList<GameObject.SerializableRoom>) message;
+                            this.availableRooms = (ArrayList<SerializedRoom>) arrayList;
                             this.updateRoomList();
                         }
-                        else if (message instanceof GameObject.Move move) {
+                        else if (message instanceof Move move) {
                             System.out.println("Received move");
 
                             if (this.board != null) {
-                                GameObject.Tile[][] boardArray = this.board.boardArray;
+                                Tile[][] boardArray = this.board.boardArray;
                                 boardArray[move.targetRow][move.targetCol].occupant = move.moveMaker;
-                                boardArray[move.targetRow][move.targetCol].ui.addOccupant(move.moveMaker);
+
+                                if (!this.invisibleModeIsOn) {
+                                    boardArray[move.targetRow][move.targetCol].ui.showOccupant(move.moveMaker);
+                                }
                             }
                         }
-                        else if (message instanceof GameObject.Board passedBoard) {
+                        else if (message instanceof Board passedBoard) {
                             System.out.println("Received board");
                             this.board = passedBoard;
                         }
-                        else if (message instanceof GameObject.MatchEndResult endResult) {
+                        else if (message instanceof MatchEndResult endResult) {
                             System.out.println("Received end result");
                             this.endMatch(endResult);
                         }
-                        else if (message instanceof GameObject.SerializableRoom serializableRoom) {
-                            System.out.println("Received serializable room");
+                        else if (message instanceof SerializedRoom serializableRoom) {
+                            System.out.println("Received serialized room");
                             this.updateRoomSettings(serializableRoom);
                         }
-                        else if (message instanceof GameObject.MoveRequest moveRequest) {
+                        else if (message instanceof MoveRequest moveRequest) {
                             this.handleMoveRequest();
+
+                            // Show "reveal move" in case of an invisible mode being on
+                            if (this.invisibleModeIsOn && this.invisibleModeRevealChances > 0) {
+                                this.gameMatchGui.revealAmount.text.setText("You have " + this.invisibleModeRevealChances + " reveal(s) left");
+                                this.gameMatchGui.showRevealStonesButton();
+                                this.gameMatchGui.revealStones.setOnMouseClicked(e -> {
+                                    this.showHiddenStones();
+                                    this.gameMatchGui.revealStones.setOnMouseClicked(null);
+                                    this.gameMatchGui.hideRevealStonesButton();
+                                    this.revealModeIsOn = true;
+                                    this.updateInvisibleModeRevealChancesToServer();
+                                });
+                            }
 
                             if (moveRequest.timerPerTurnInMilliseconds > 0) {
                                 this.gameMatchGui.turnTimer.text.setText("Make a move in: " + String.format("%.1f", moveRequest.timerPerTurnInMilliseconds / 1000.0) + "s");
 
                                 Timeline timeline = new Timeline();
                                 timeline.getKeyFrames().add(
-                                        new KeyFrame(Duration.millis(50), event -> {
-                                            moveRequest.timerPerTurnInMilliseconds -= 50;
+                                        new KeyFrame(Duration.millis(100), event -> {
+                                            moveRequest.timerPerTurnInMilliseconds -= 100;
                                             this.gameMatchGui.turnTimer.text.setText("Make a move in: " + String.format("%.1f", moveRequest.timerPerTurnInMilliseconds / 1000.0) + "s");
 
                                             if (moveRequest.timerPerTurnInMilliseconds <= 0 || !this.turnTimerIsRunning) {
@@ -491,44 +512,24 @@ public class Client implements Runnable {
                                 this.turnTimerIsRunning = true;
                             }
                         }
+                        else if (message instanceof Integer turns) {
+                            this.invisibleModeRevealChances = turns;
+                            if (!this.invisibleModeIsOn) {
+                                if (this.invisibleModeRevealChances > 0) {
+                                    this.invisibleModeIsOn = true;
+                                }
+                            }
+                        }
 
                         this.oisThreadLock.notifyAll();
                     }
                 } catch (IOException | ClassNotFoundException e) {
-                    System.err.println("Failed to read object from gomokugame.server on port: " + this.clientSocket.getPort());
+                    System.err.println("Failed to read object from server.");
                     this.close();
                     break;
                 }
             }
         });
-    }
-
-    private void getBoardFromServer() {
-        System.out.println("Getting board from port " + clientSocket.getPort());
-        this.sendRequestToServer("GET_BOARD_REQUEST");
-    }
-
-    private void getRoomListByIdFromServer() {
-        System.out.println("Getting room list from port " + clientSocket.getPort());
-        this.sendRequestToServer("GET_ROOM_LIST");
-    }
-
-    private void getColorFromServer() {
-        System.out.println("Getting color from port " + clientSocket.getPort());
-        this.sendRequestToServer("GET_COLOR_REQUEST");
-    }
-
-    private void sendCreateRoomRequest(String roomName) {
-        System.out.println("Creating room request");
-
-        GameObject.SerializableRoom roomToCreate = new GameObject.SerializableRoom(roomName);
-        roomToCreate.isCreateRequest = true;
-        this.sendRequestToServer(roomToCreate);
-    }
-
-    private void sendJoinRoomRequest(GameObject.SerializableRoom roomToJoin) {
-        System.out.println("Joining room");
-        this.sendRequestToServer(roomToJoin);
     }
 
     private void sendLeaveRoomRequest() {
@@ -541,7 +542,20 @@ public class Client implements Runnable {
         this.sendRequestToServer("START_MATCH_REQUEST");
     }
 
-    // Request expects a callback (response) from the gomokugame.server
+    private void sendCreateRoomRequest(String roomName) {
+        System.out.println("Creating room request");
+
+        SerializedRoom roomToCreate = new SerializedRoom(roomName);
+        roomToCreate.isCreateRequest = true;
+        this.sendRequestToServer(roomToCreate);
+    }
+
+    private void sendJoinRoomRequest(SerializedRoom roomToJoin) {
+        System.out.println("Joining room");
+        this.sendRequestToServer(roomToJoin);
+    }
+
+    // Request expects a callback (response) from the server
     private void sendRequestToServer(Object request) {
         synchronized (this.oisThreadLock) {
             try {
@@ -550,34 +564,59 @@ public class Client implements Runnable {
                 this.oos.flush();
                 this.oisThreadLock.wait();
             } catch (IOException e) {
-                System.err.println("Failed to send " + request + " to gomokugame.server on port " + clientSocket.getPort());
+                System.err.println("Failed to send " + request + " to Server on port " + clientSocket.getPort());
             } catch (InterruptedException e) {
                 throw new RuntimeException(e);
             }
         }
     }
 
-    // Message does not expect a response from the gomokugame.server
+    // Message does not expect a response from the server
     private void sendMessageToServer(Object message) {
         try {
             System.out.println("Sending: " + message);
             this.oos.writeObject(message);
             this.oos.flush();
         } catch (IOException e) {
-            System.err.println("Failed to send " + message + " to gomokugame.server on port " + clientSocket.getPort());
+            System.err.println("Failed to send " + message + " to Server on port " + clientSocket.getPort());
         }
     }
 
-    /// GUI RELATEd METHODS
-    public double getCurrentWidth () {
+    private void getBoardFromServer() {
+        System.out.println("Getting board from port " + clientSocket.getPort());
+        this.sendRequestToServer("GET_BOARD_REQUEST");
+    }
+
+    private void getRoomListFromServer() {
+        System.out.println("Getting room list from port " + clientSocket.getPort());
+        this.sendRequestToServer("GET_ROOM_LIST");
+    }
+
+    private void getColorFromServer() {
+        System.out.println("Getting color from port " + clientSocket.getPort());
+        this.sendRequestToServer("GET_COLOR_REQUEST");
+    }
+
+    private void getInvisibleModeRevealChancesFromServer() {
+        System.out.println("Getting invisible mode " + clientSocket.getPort());
+        this.sendRequestToServer("GET_INVISIBLE_MODE_REVEAL_CHANCES");
+    }
+
+    private void updateInvisibleModeRevealChancesToServer() {
+        System.out.println("Updating invisible mode " + clientSocket.getPort());
+        this.sendRequestToServer("UPDATE_INVISIBLE_MODE_REVEAL_CHANCES");
+    }
+
+    /// GUI RELATED METHODS
+    private double getCurrentWidth () {
         return this.stage.sceneProperty().get().getWidth();
     }
 
-    public double getCurrentHeight () {
+    private double getCurrentHeight () {
         return this.stage.sceneProperty().get().getHeight();
     }
 
-    public void showMainMenu() {
+    private void showMainMenu() {
         double currentWidth = getCurrentWidth();
         double currentHeight = getCurrentHeight();
 
@@ -591,7 +630,7 @@ public class Client implements Runnable {
         });
     }
 
-    public void showRoomList() {
+    private void showRoomList() {
         double currentWidth = getCurrentWidth();
         double currentHeight = getCurrentHeight();
 
@@ -606,7 +645,7 @@ public class Client implements Runnable {
         });
     }
 
-    public void showRoomCreation() {
+    private void showRoomCreation() {
         double currentWidth = getCurrentWidth();
         double currentHeight = getCurrentHeight();
 
@@ -620,7 +659,7 @@ public class Client implements Runnable {
         });
     }
 
-    public void showRoomSettings() {
+    private void showRoomSettings() {
         double currentWidth = getCurrentWidth();
         double currentHeight = getCurrentHeight();
 
@@ -634,16 +673,14 @@ public class Client implements Runnable {
         });
     }
 
-    public void showGameMatchGui() {
+    private void showGameMatchGui() {
         double currentWidth = getCurrentWidth();
         double currentHeight = getCurrentHeight();
 
-        Platform.runLater(() -> {
-            this.stage.setScene(new Scene(this.gameMatchGui, currentWidth, currentHeight));
-        });
+        Platform.runLater(() -> this.stage.setScene(new Scene(this.gameMatchGui, currentWidth, currentHeight)));
     }
 
-    public void updateRoomList() {
+    private void updateRoomList() {
         if (this.roomListGui == null) {
             return;
         }
@@ -651,7 +688,7 @@ public class Client implements Runnable {
         // Only update if the current scene is the roomListScene
         if (this.stage.sceneProperty().get().getRoot() == this.roomListGui) {
             Platform.runLater(() -> {
-                GUI.VerticalScrollingContainer container = this.roomListGui.roomsContainer;
+                VerticalScrollingContainer container = this.roomListGui.roomsContainer;
                 container.removeAllElements();
 
                 if (availableRooms.isEmpty()) {
@@ -660,11 +697,11 @@ public class Client implements Runnable {
                 else {
                     this.roomListGui.descriptionText.text.setText(this.availableRooms.size() + " room(s) available. Go join or create one!");
 
-                    for (GameObject.SerializableRoom room : this.availableRooms) {
-                        GUI.ListedRoomUi roomUi = new GUI.ListedRoomUi(0.5, 0.175, this.roomListGui);
+                    for (SerializedRoom room : this.availableRooms) {
+                        ListedRoomUi roomUi = new ListedRoomUi(0.5, 0.175, this.roomListGui);
                         roomUi.roomName.text.setText("Room Name: " + room.roomName);
                         roomUi.roomCreator.text.setText("Room Creator Id: " + room.roomCreatorId);
-                        roomUi.roomId.text.setText("Room Id: " + Integer.toString(room.roomId));
+                        roomUi.roomId.text.setText("Room Id: " + room.roomId);
                         roomUi.playersAmount.text.setText("Connected players: " + room.connectedPlayersAmount + " player(s)");
 
                         if (room.connectedPlayersAmount < 2) {
@@ -674,9 +711,9 @@ public class Client implements Runnable {
                             roomUi.matchStatus.text.setText("Join as Spectator");
                         }
 
-                        roomUi.joinButton.setOnMouseClicked(_ -> {
+                        roomUi.joinButton.setOnMouseClicked(e -> {
                             if (this.roomSettingsGui == null) {
-                                this.roomSettingsGui = new GUI.RoomSettingsGui();
+                                this.initializeRoomSettingsGui();
                             }
 
                             this.roomSettingsGui.hBox2.getChildren().remove(this.roomSettingsGui.startButton);
@@ -689,11 +726,6 @@ public class Client implements Runnable {
                                 this.roomSettingsGui.notification.text.setText("You are spectating. Waiting for host to start...");
                             }
 
-                            this.roomSettingsGui.leaveRoom.setOnMouseClicked(_ -> {
-                                this.sendLeaveRoomRequest();
-                                this.showRoomList();
-                            });
-
                             this.sendJoinRoomRequest(room);
                             this.showRoomSettings();
                         });
@@ -705,7 +737,63 @@ public class Client implements Runnable {
         }
     }
 
-    public void updateRoomSettings(GameObject.SerializableRoom room) {
+    private void initializeRoomSettingsGui() {
+        this.roomSettingsGui = new RoomSettingsGui();
+
+        this.roomSettingsGui.leaveRoom.setOnMouseClicked(e -> {
+            this.sendLeaveRoomRequest();
+            this.showRoomList();
+        });
+
+        this.roomSettingsGui.startButton.setOnMouseClicked(e -> this.sendStartMatchRequest());
+
+        this.roomSettingsGui.boardSizeSettings.setOnAction(e -> {
+            String selectedItem = this.roomSettingsGui.boardSizeSettings.getSelectionModel().getSelectedItem();
+
+            if (selectedItem != null) {
+                System.out.println(selectedItem);
+
+                BoardSizeOption boardSizeOption = new BoardSizeOption(Integer.parseInt(selectedItem.split("x")[0]));
+                this.sendMessageToServer(boardSizeOption);
+            }
+        });
+
+        this.roomSettingsGui.timerPerTurnSettings.setOnAction(e -> {
+            String selectedItem = this.roomSettingsGui.timerPerTurnSettings.getSelectionModel().getSelectedItem();
+
+            if (selectedItem != null) {
+                System.out.println(selectedItem);
+                TimerOption timerOption;
+
+                if (selectedItem.equals("N/A")) {
+                    timerOption = new TimerOption(0);
+                } else {
+                    timerOption = new TimerOption((int) (Double.parseDouble(selectedItem.split("s")[0]) * 1000));
+                }
+
+                this.sendMessageToServer(timerOption);
+            }
+        });
+
+        this.roomSettingsGui.invisibleModeRevealChancesSettings.setOnAction(e -> {
+            String selectedItem = this.roomSettingsGui.invisibleModeRevealChancesSettings.getSelectionModel().getSelectedItem();
+
+            if (selectedItem != null) {
+                System.out.println(selectedItem);
+                InvisibleModeOption invisibleModeOption;
+
+                if (selectedItem.equals("N/A")) {
+                    invisibleModeOption = new InvisibleModeOption(-1);
+                } else {
+                    invisibleModeOption = new InvisibleModeOption(Integer.parseInt(selectedItem.split(" ")[0]));
+                }
+
+                this.sendMessageToServer(invisibleModeOption);
+            }
+        });
+    }
+
+    private void updateRoomSettings(SerializedRoom room) {
         if (this.roomSettingsGui == null) {
             return;
         }
@@ -729,6 +817,33 @@ public class Client implements Runnable {
             else {
                 this.roomSettingsGui.timerPerTurn.text.setText("Timer: N/A");
             }
+
+            if (room.invisibleModeRevealChances > 0) {
+                this.roomSettingsGui.invisibleModeRevealChances.text.setText("Invisible Mode: On (" + room.invisibleModeRevealChances + " reveal chance(s))");
+            }
+            else {
+                this.roomSettingsGui.invisibleModeRevealChances.text.setText("Invisible Mode: Off");
+            }
         });
+    }
+
+    private void showHiddenStones() {
+        for (Tile[] tiles : this.board.boardArray) {
+            for (Tile tile : tiles) {
+                if (tile.occupant != null) {
+                    tile.ui.showOccupant(tile.occupant);
+                }
+            }
+        }
+    }
+
+    private void hideAllStones() {
+        for (Tile[] tiles : this.board.boardArray) {
+            for (Tile tile : tiles) {
+                if (tile.occupant != null) {
+                    tile.ui.hideOccupant();
+                }
+            }
+        }
     }
 }
