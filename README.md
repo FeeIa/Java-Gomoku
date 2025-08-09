@@ -1,7 +1,6 @@
 # Gomoku Game - CSC1004 Project 2
-### Developed by Bryan Edelson
 
-This is the second out of the three projects in **CSC1004** course of CUHK-SZ. There are three types of features implemented:
+There are three types of features implemented:
 - **Basic**: Features required by the course project details.
 - **Advanced**: Features that are implemented for extra score.
 - **Additional**: Features that are implemented for self-interest.
